@@ -177,7 +177,7 @@ contract ThunderLoan is Initializable, OwnableUpgradeable, UUPSUpgradeable, Orac
         assetToken.burn(msg.sender, amountOfAssetToken);
         assetToken.transferUnderlyingTo(msg.sender, amountUnderlying);
     }
-
+    // audit - follow up (reentrancy)
     function flashloan(
         address receiverAddress,
         IERC20 token,
@@ -266,6 +266,7 @@ contract ThunderLoan is Initializable, OwnableUpgradeable, UUPSUpgradeable, Orac
         if (newFee > s_feePrecision) {
             revert ThunderLoan__BadNewFee();
         }
+        // audit-low - events should be emitted on state changes
         s_flashLoanFee = newFee;
     }
 
