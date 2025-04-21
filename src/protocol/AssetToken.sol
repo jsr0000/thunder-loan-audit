@@ -66,6 +66,7 @@ contract AssetToken is ERC20 {
     }
 
     function mint(address to, uint256 amount) external onlyThunderLoan {
+        // @audit-medium - Aderyn M-2
         _mint(to, amount);
     }
 
