@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 pragma solidity 0.8.20;
 
-import { ERC20 } from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 contract AssetToken is ERC20 {
     error AssetToken__onlyThunderLoan();
-    error AssetToken__ExhangeRateCanOnlyIncrease(uint256 oldExchangeRate, uint256 newExchangeRate);
+    error AssetToken__ExhangeRateCanOnlyIncrease(
+        uint256 oldExchangeRate,
+        uint256 newExchangeRate
+    );
     error AssetToken__ZeroAddress();
 
     using SafeERC20 for IERC20;
@@ -33,6 +36,7 @@ contract AssetToken is ERC20 {
     /*//////////////////////////////////////////////////////////////
                                MODIFIERS
     //////////////////////////////////////////////////////////////*/
+    // @audit-informational - where's the NATSPEC?
     modifier onlyThunderLoan() {
         if (msg.sender != i_thunderLoan) {
             revert AssetToken__onlyThunderLoan();
@@ -51,15 +55,18 @@ contract AssetToken is ERC20 {
                                FUNCTIONS
     //////////////////////////////////////////////////////////////*/
     constructor(
-        address thunderLoan,
-        IERC20 underlying,
-        string memory assetName,
-        string memory assetSymbol
+        address thunderLoan, // ThunderLoan.sol address
+        IERC20 underlying, // Token to deposit in exchange for AssetTokens
+        string memory assetName, // AssetToken Name
+        string memory assetSymbol // AssetToken Symbol
     )
+        // ERC20 Constructor w/ parameters
         ERC20(assetName, assetSymbol)
+        // Zero Address checks for thunderloan and underlying parameters
         revertIfZeroAddress(thunderLoan)
         revertIfZeroAddress(address(underlying))
     {
+        // Assigning constructor arguments to state variables.
         i_thunderLoan = thunderLoan;
         i_underlying = underlying;
         s_exchangeRate = STARTING_EXCHANGE_RATE;
@@ -74,7 +81,10 @@ contract AssetToken is ERC20 {
         _burn(account, amount);
     }
 
-    function transferUnderlyingTo(address to, uint256 amount) external onlyThunderLoan {
+    function transferUnderlyingTo(
+        address to,
+        uint256 amount
+    ) external onlyThunderLoan {
         i_underlying.safeTransfer(to, amount);
     }
 
@@ -87,10 +97,15 @@ contract AssetToken is ERC20 {
         // newExchangeRate = oldExchangeRate * (totalSupply + fee) / totalSupply
         // newExchangeRate = 1 (4 + 0.5) / 4
         // newExchangeRate = 1.125
-        uint256 newExchangeRate = s_exchangeRate * (totalSupply() + fee) / totalSupply();
+        // @audit-Question: What if totalSupply is 0? Is that possible?
+        uint256 newExchangeRate = (s_exchangeRate * (totalSupply() + fee)) /
+            totalSupply();
 
         if (newExchangeRate <= s_exchangeRate) {
-            revert AssetToken__ExhangeRateCanOnlyIncrease(s_exchangeRate, newExchangeRate);
+            revert AssetToken__ExhangeRateCanOnlyIncrease(
+                s_exchangeRate,
+                newExchangeRate
+            );
         }
         s_exchangeRate = newExchangeRate;
         emit ExchangeRateUpdated(s_exchangeRate);

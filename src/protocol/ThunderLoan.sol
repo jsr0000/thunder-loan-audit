@@ -102,12 +102,15 @@ contract ThunderLoan is
     /*//////////////////////////////////////////////////////////////
                             STATE VARIABLES
     //////////////////////////////////////////////////////////////*/
+    // @audit-Explainer: Seems to map AssetToken to it's underlying token eg. USDC -> USDCAssetToken
     mapping(IERC20 => AssetToken) public s_tokenToAssetToken;
 
     // The fee in WEI, it should have 18 decimals. Each flash loan takes a flat fee of the token price.
+    // @audit-Informational: s_feePrecision never changes, should be constant or immutable.
     uint256 private s_feePrecision;
+    // @audit-Informational: s_flashLoanFee never changes, should be constant or immutable.
     uint256 private s_flashLoanFee; // 0.3% ETH fee
-
+    // @audit-Explainer: Seems to be a mapping to identify when a token is in the middle of a flash loan.
     mapping(IERC20 token => bool currentlyFlashLoaning)
         private s_currentlyFlashLoaning;
 
@@ -177,16 +180,19 @@ contract ThunderLoan is
         s_flashLoanFee = 3e15; // 0.3% ETH fee
     }
 
+    // @audit-Informational: Function has no NATSPEC.
     function deposit(
         IERC20 token,
         uint256 amount
     ) external revertIfZero(amount) revertIfNotAllowedToken(token) {
         AssetToken assetToken = s_tokenToAssetToken[token];
         uint256 exchangeRate = assetToken.getExchangeRate();
+        // deposit function math
         uint256 mintAmount = (amount * assetToken.EXCHANGE_RATE_PRECISION()) /
             exchangeRate;
         emit Deposit(msg.sender, token, amount);
         assetToken.mint(msg.sender, mintAmount);
+        // @audit - follow-up
         uint256 calculatedFee = getCalculatedFee(token, amount);
         assetToken.updateExchangeRate(calculatedFee);
         token.safeTransferFrom(msg.sender, address(assetToken), amount);
@@ -204,6 +210,7 @@ contract ThunderLoan is
         if (amountOfAssetToken == type(uint256).max) {
             amountOfAssetToken = assetToken.balanceOf(msg.sender);
         }
+        // redeem function math
         uint256 amountUnderlying = (amountOfAssetToken * exchangeRate) /
             assetToken.EXCHANGE_RATE_PRECISION();
         emit Redeemed(msg.sender, token, amountOfAssetToken, amountUnderlying);
@@ -211,12 +218,14 @@ contract ThunderLoan is
         assetToken.transferUnderlyingTo(msg.sender, amountUnderlying);
     }
     // audit - follow up (reentrancy)
+    // @audit-informational: Function has no NATSPEC
     function flashloan(
         address receiverAddress,
         IERC20 token,
         uint256 amount,
         bytes calldata params
     ) external revertIfZero(amount) revertIfNotAllowedToken(token) {
+        // startingBalance is used later in function to assure the loan has been repaid!
         AssetToken assetToken = s_tokenToAssetToken[token];
         uint256 startingBalance = IERC20(token).balanceOf(address(assetToken));
 
@@ -260,6 +269,7 @@ contract ThunderLoan is
         s_currentlyFlashLoaning[token] = false;
     }
 
+    // @audit-informational - where's the NATSPEC?
     function repay(IERC20 token, uint256 amount) public {
         if (!s_currentlyFlashLoaning[token]) {
             revert ThunderLoan__NotCurrentlyFlashLoaning();
@@ -301,11 +311,13 @@ contract ThunderLoan is
         }
     }
 
+    // @audit-Informational: Function missing NATSPEC
     function getCalculatedFee(
         IERC20 token,
         uint256 amount
     ) public view returns (uint256 fee) {
         //slither-disable-next-line divide-before-multiply
+        // @audit-high - If the Fee is calculated in tokens, the value should reflect that.
         uint256 valueOfBorrowedToken = (amount *
             getPriceInWeth(address(token))) / s_feePrecision;
         //slither-disable-next-line divide-before-multiply
@@ -320,6 +332,7 @@ contract ThunderLoan is
         s_flashLoanFee = newFee;
     }
     // audit-informational - fucntions not used intenally can be marked as internal
+    // @audit-Question: Is there a way to unset or change allowed tokens?
     function isAllowedToken(IERC20 token) public view returns (bool) {
         return address(s_tokenToAssetToken[token]) != address(0);
     }
